@@ -121,6 +121,9 @@ BOOL QueryPerformanceFrequency(int64_t *lpFrequency);
 void Sleep(DWORD dwMilliseconds);
 
 DWORD GetLastError(void);
+
+UINT_PTR SetTimer(HWND hWnd, UINT_PTR nIDEvent, UINT uElapse, void* lpTimerFunc);
+BOOL KillTimer(HWND hWnd, UINT_PTR uIDEvent);
 ]])
 
 local user32 = ffi.load("user32")
@@ -137,6 +140,14 @@ local WM_DESTROY      = 0x0002
 local WM_SIZE         = 0x0005
 local WM_CLOSE        = 0x0010
 local WM_QUIT         = 0x0012
+local WM_TIMER         = 0x0113
+local WM_SIZING        = 0x0214
+local WM_MOVING        = 0x0216
+local WM_ENTERSIZEMOVE = 0x0231
+local WM_EXITSIZEMOVE  = 0x0232
+
+local LIVE_RESIZE_TIMER_ID = 0xBEEF
+local LIVE_RESIZE_TIMER_MS = 16
 
 local WM_KEYDOWN      = 0x0100
 local WM_KEYUP        = 0x0101
@@ -185,6 +196,11 @@ local state = {
   running = false,
   width = 0,
   height = 0,
+
+  in_sizemove = false,
+  in_frame = false,
+  last_time = nil,
+  frame_step = nil,
 }
 
 -- Очень важно: callback должен жить, пока живёт окно.
@@ -249,12 +265,106 @@ end
 
 M.quit = quit
 
+local function frame_step()
+  if state.in_frame then
+    return
+  end
+
+  if not state.running then
+    return
+  end
+
+  local app = state.app
+
+  if not app then
+    return
+  end
+
+  state.in_frame = true
+
+  local ok, err = pcall(function()
+    local current_time = now_seconds()
+
+    if state.last_time == nil then
+      state.last_time = current_time
+    end
+
+    local dt = current_time - state.last_time
+    state.last_time = current_time
+
+    if dt < 0 then
+      dt = 0
+    end
+
+    if dt > 0.1 then
+      dt = 0.1
+    end
+
+    if app.update then
+      local result = app.update(dt)
+
+      if result == "quit" then
+        quit()
+        return
+      end
+    end
+
+    if app.render then
+      app.render()
+    end
+
+    input._end_frame()
+  end)
+
+  state.in_frame = false
+
+  if not ok then
+    print("frame_step error:", err)
+    quit()
+  end
+end
+
 -- ============================================================
 -- Window procedure
 -- ============================================================
 
 local function wndproc(hwnd, msg, wparam, lparam)
   local app = state.app
+
+  if msg == WM_ENTERSIZEMOVE then
+    state.in_sizemove = true
+
+    if hwnd ~= nil then
+      user32.SetTimer(hwnd, LIVE_RESIZE_TIMER_ID, LIVE_RESIZE_TIMER_MS, nil)
+    end
+
+    return 0
+  end
+
+  if msg == WM_EXITSIZEMOVE then
+    state.in_sizemove = false
+
+    if hwnd ~= nil then
+      user32.KillTimer(hwnd, LIVE_RESIZE_TIMER_ID)
+    end
+
+    frame_step()
+
+    return 0
+  end
+
+  if msg == WM_TIMER then
+    if state.in_sizemove and tonumber(wparam) == LIVE_RESIZE_TIMER_ID then
+      frame_step()
+      return 0
+    end
+  end
+
+  if msg == WM_SIZING or msg == WM_MOVING then
+    if state.in_sizemove then
+      frame_step()
+    end
+  end
 
   if msg == WM_ERASEBKGND then
     return 1
@@ -269,6 +379,10 @@ local function wndproc(hwnd, msg, wparam, lparam)
 
     if app and app.resize then
       app.resize(width, height)
+    end
+
+    if state.in_sizemove then
+      frame_step()
     end
 
     return 0
@@ -399,6 +513,11 @@ local function wndproc(hwnd, msg, wparam, lparam)
   end
 
   if msg == WM_DESTROY then
+    if hwnd ~= nil then
+      user32.KillTimer(hwnd, LIVE_RESIZE_TIMER_ID)
+    end
+
+    state.in_sizemove = false
     state.running = false
 
     if app and app.shutdown then
@@ -500,7 +619,9 @@ function M.run(config)
   end
 
   local msg = ffi.new("MSG")
-  local last_time = now_seconds()
+
+  state.last_time = now_seconds()
+  state.frame_step = frame_step
 
   while state.running do
     while user32.PeekMessageA(msg, nil, 0, 0, PM_REMOVE) ~= 0 do
@@ -517,26 +638,10 @@ function M.run(config)
       break
     end
 
-    local current_time = now_seconds()
-    local dt = current_time - last_time
-    last_time = current_time
+    frame_step()
 
-    if app.update then
-      local result = app.update(dt)
-
-      if result == "quit" then
-        quit()
-      end
-    end
-
-    if app.render then
-      app.render()
-    end
-
-    input._end_frame()
-
-    -- Чтобы пока не жрать 100% CPU.
-    -- Потом можно заменить на нормальный frame pacing / vsync.
+    -- Пока оставляем, чтобы не жрать CPU.
+    -- С vsync в OpenGL фактический темп всё равно будет держать SwapBuffers.
     kernel32.Sleep(1)
   end
 
