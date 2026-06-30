@@ -5,6 +5,7 @@ local M = {}
 
 local GL_VERTEX_SHADER = 0x8B31
 local GL_FRAGMENT_SHADER = 0x8B30
+local GL_COMPUTE_SHADER = 0x91B9
 
 local GL_COMPILE_STATUS = 0x8B81
 local GL_LINK_STATUS = 0x8B82
@@ -229,6 +230,13 @@ function Program:uniform2f(name, x, y)
   end
 end
 
+function Program:uniform1i(name, x)
+  local loc = self:uniform_location(name)
+  if loc >= 0 then
+    gl.fn.glUniform1i(loc, x)
+  end
+end
+
 function Program:delete()
   if self.id and self.id ~= 0 then
     gl.fn.glDeleteProgram(self.id)
@@ -270,6 +278,97 @@ function M.update_all(dt)
   for i = 1, #programs do
     programs[i]:update(dt)
   end
+end
+
+function M.compute(name, compute_path)
+  local program = setmetatable({
+    name = name,
+    compute_path = compute_path,
+
+    id = 0,
+
+    compute_source = nil,
+
+    last_error = nil,
+
+    check_timer = 0,
+    check_interval = 0.25,
+
+    uniform_cache = {},
+  }, Program)
+
+  function program:reload(force)
+    local cs_source, cs_err = read_file(self.compute_path)
+    if not cs_source then
+      self.last_error = cs_err
+      log_line(cs_err)
+      return false
+    end
+
+    if not force and cs_source == self.compute_source then
+      return false
+    end
+
+    log_line("Reload requested: " .. self.name)
+
+    local cs, err = compile_shader(GL_COMPUTE_SHADER, cs_source, self.compute_path)
+    if not cs then
+      self.last_error = err
+      log_line(err)
+      return false
+    end
+
+    local new_program = gl.fn.glCreateProgram()
+
+    if new_program == 0 then
+      gl.fn.glDeleteShader(cs)
+      self.last_error = "glCreateProgram failed: " .. self.name
+      log_line(self.last_error)
+      return false
+    end
+
+    gl.fn.glAttachShader(new_program, cs)
+    gl.fn.glLinkProgram(new_program)
+
+    gl.fn.glDeleteShader(cs)
+
+    local ok = ffi.new("GLint[1]")
+    gl.fn.glGetProgramiv(new_program, GL_LINK_STATUS, ok)
+
+    if ok[0] == 0 then
+      local err_log = get_program_log(new_program)
+      gl.fn.glDeleteProgram(new_program)
+
+      self.last_error = "Compute link failed: " .. self.name .. "\n" .. err_log
+      log_line(self.last_error)
+      return false
+    end
+
+    local old_program = self.id
+
+    self.id = new_program
+    self.compute_source = cs_source
+    self.last_error = nil
+    self.uniform_cache = {}
+
+    if old_program and old_program ~= 0 then
+      gl.fn.glDeleteProgram(old_program)
+    end
+
+    log_line("Reload OK: " .. self.name)
+
+    return true
+  end
+
+  local ok = program:reload(true)
+
+  if not ok then
+    error("Initial compute shader load failed: " .. name .. "\n" .. tostring(program.last_error))
+  end
+
+  table.insert(programs, program)
+
+  return program
 end
 
 function M.shutdown_all()

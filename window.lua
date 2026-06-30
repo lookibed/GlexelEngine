@@ -263,6 +263,25 @@ local function quit()
   end
 end
 
+local function app_call(name, ...)
+  local app = state.app
+  local fn = app and app[name]
+
+  if not fn then
+    return nil
+  end
+
+  local ok, result = pcall(fn, ...)
+
+  if not ok then
+    print("app." .. name .. " error:", result)
+    quit()
+    return nil
+  end
+
+  return result
+end
+
 M.quit = quit
 
 local function frame_step()
@@ -377,9 +396,7 @@ local function wndproc(hwnd, msg, wparam, lparam)
     state.width = width
     state.height = height
 
-    if app and app.resize then
-      app.resize(width, height)
-    end
+    app_call("resize", width, height)
 
     if state.in_sizemove then
       frame_step()
@@ -393,12 +410,8 @@ local function wndproc(hwnd, msg, wparam, lparam)
 
     input._key_down(vk)
 
-    if app and app.key_down then
-      local result = app.key_down(vk)
-
-      if result == "quit" then
-        quit()
-      end
+    if app_call("key_down", vk) == "quit" then
+      quit()
     end
 
     return 0
@@ -409,9 +422,7 @@ local function wndproc(hwnd, msg, wparam, lparam)
 
     input._key_up(vk)
 
-    if app and app.key_up then
-      app.key_up(vk)
-    end
+    app_call("key_up", vk)
 
     return 0
   end
@@ -422,9 +433,7 @@ local function wndproc(hwnd, msg, wparam, lparam)
 
     input._mouse_move(x, y)
 
-    if app and app.mouse_move then
-      app.mouse_move(x, y)
-    end
+    app_call("mouse_move", x, y)
 
     return 0
   end
@@ -435,9 +444,7 @@ local function wndproc(hwnd, msg, wparam, lparam)
 
     input._mouse_down("left", x, y)
 
-    if app and app.mouse_down then
-      app.mouse_down("left", x, y)
-    end
+    app_call("mouse_down", "left", x, y)
 
     return 0
   end
@@ -448,9 +455,7 @@ local function wndproc(hwnd, msg, wparam, lparam)
 
     input._mouse_up("left", x, y)
 
-    if app and app.mouse_up then
-      app.mouse_up("left", x, y)
-    end
+    app_call("mouse_up", "left", x, y)
 
     return 0
   end
@@ -461,9 +466,7 @@ local function wndproc(hwnd, msg, wparam, lparam)
 
     input._mouse_down("right", x, y)
 
-    if app and app.mouse_down then
-      app.mouse_down("right", x, y)
-    end
+    app_call("mouse_down", "right", x, y)
 
     return 0
   end
@@ -474,9 +477,7 @@ local function wndproc(hwnd, msg, wparam, lparam)
 
     input._mouse_up("right", x, y)
 
-    if app and app.mouse_up then
-      app.mouse_up("right", x, y)
-    end
+    app_call("mouse_up", "right", x, y)
 
     return 0
   end
@@ -487,9 +488,7 @@ local function wndproc(hwnd, msg, wparam, lparam)
 
     input._mouse_down("middle", x, y)
 
-    if app and app.mouse_down then
-      app.mouse_down("middle", x, y)
-    end
+    app_call("mouse_down", "middle", x, y)
 
     return 0
   end
@@ -500,9 +499,7 @@ local function wndproc(hwnd, msg, wparam, lparam)
 
     input._mouse_up("middle", x, y)
 
-    if app and app.mouse_up then
-      app.mouse_up("middle", x, y)
-    end
+    app_call("mouse_up", "middle", x, y)
 
     return 0
   end
@@ -520,9 +517,7 @@ local function wndproc(hwnd, msg, wparam, lparam)
     state.in_sizemove = false
     state.running = false
 
-    if app and app.shutdown then
-      app.shutdown()
-    end
+    app_call("shutdown")
 
     user32.PostQuitMessage(0)
     return 0

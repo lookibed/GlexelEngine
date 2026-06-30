@@ -59,6 +59,8 @@ void glViewport(int x, int y, int width, int height);
 const unsigned char* glGetString(unsigned int name);
 unsigned int glGetError(void);
 
+void* GetProcAddress(HINSTANCE hModule, LPCSTR lpProcName);
+
 typedef HGLRC (__stdcall *PFNWGLCREATECONTEXTATTRIBSARBPROC)(
   HDC hDC,
   HGLRC hShareContext,
@@ -98,11 +100,45 @@ typedef void   (__stdcall *PFNGLUNIFORM2FPROC)(GLint location, GLfloat v0, GLflo
 typedef void   (__stdcall *PFNGLGENVERTEXARRAYSPROC)(GLsizei n, GLuint *arrays);
 typedef void   (__stdcall *PFNGLBINDVERTEXARRAYPROC)(GLuint array);
 typedef void   (__stdcall *PFNGLDRAWARRAYSPROC)(GLenum mode, GLint first, GLsizei count);
+
+typedef void (__stdcall *PFNGLDISPATCHCOMPUTEPROC)(GLuint num_groups_x, GLuint num_groups_y, GLuint num_groups_z);
+typedef void (__stdcall *PFNGLMEMORYBARRIERPROC)(GLbitfield barriers);
+
+typedef void (__stdcall *PFNGLBINDIMAGETEXTUREPROC)(
+  GLuint unit,
+  GLuint texture,
+  GLint level,
+  GLboolean layered,
+  GLint layer,
+  GLenum access,
+  GLenum format
+);
+
+typedef void (__stdcall *PFNGLGENTEXTURESPROC)(GLsizei n, GLuint *textures);
+typedef void (__stdcall *PFNGLDELETETEXTURESPROC)(GLsizei n, const GLuint *textures);
+typedef void (__stdcall *PFNGLBINDTEXTUREPROC)(GLenum target, GLuint texture);
+typedef void (__stdcall *PFNGLACTIVETEXTUREPROC)(GLenum texture);
+typedef void (__stdcall *PFNGLTEXPARAMETERIPROC)(GLenum target, GLenum pname, GLint param);
+
+typedef void (__stdcall *PFNGLTEXIMAGE2DPROC)(
+  GLenum target,
+  GLint level,
+  GLint internalformat,
+  GLsizei width,
+  GLsizei height,
+  GLint border,
+  GLenum format,
+  GLenum type,
+  const void *pixels
+);
+
+typedef void (__stdcall *PFNGLUNIFORM1IPROC)(GLint location, GLint v0);
 ]]
 
 local user32 = ffi.load("user32")
 local gdi32 = ffi.load("gdi32")
 local opengl32 = ffi.load("opengl32")
+local kernel32 = ffi.load("kernel32")
 
 local M = {}
 
@@ -170,11 +206,22 @@ end
 local function load_gl_proc(name, ctype)
   local ptr = opengl32.wglGetProcAddress(name)
 
-  if is_bad_gl_pointer(ptr) then
-    error("OpenGL function not available: " .. name)
+  if ptr ~= nil and not is_bad_gl_pointer(ptr) then
+    return ffi.cast(ctype, ptr)
   end
 
-  return ffi.cast(ctype, ptr)
+  -- Fallback: загружаем из opengl32.dll через GetProcAddress.
+  local opengl32_mod = kernel32.GetModuleHandleA("opengl32.dll")
+
+  if opengl32_mod ~= nil then
+    local addr = kernel32.GetProcAddress(opengl32_mod, name)
+
+    if addr ~= nil then
+      return ffi.cast(ctype, addr)
+    end
+  end
+
+  error("OpenGL function not available: " .. name)
 end
 
 local function load_gl_functions()
@@ -202,6 +249,19 @@ local function load_gl_functions()
   fn.glGenVertexArrays = load_gl_proc("glGenVertexArrays", "PFNGLGENVERTEXARRAYSPROC")
   fn.glBindVertexArray = load_gl_proc("glBindVertexArray", "PFNGLBINDVERTEXARRAYPROC")
   fn.glDrawArrays = load_gl_proc("glDrawArrays", "PFNGLDRAWARRAYSPROC")
+
+  fn.glDispatchCompute = load_gl_proc("glDispatchCompute", "PFNGLDISPATCHCOMPUTEPROC")
+  fn.glMemoryBarrier = load_gl_proc("glMemoryBarrier", "PFNGLMEMORYBARRIERPROC")
+  fn.glBindImageTexture = load_gl_proc("glBindImageTexture", "PFNGLBINDIMAGETEXTUREPROC")
+
+  fn.glGenTextures = load_gl_proc("glGenTextures", "PFNGLGENTEXTURESPROC")
+  fn.glDeleteTextures = load_gl_proc("glDeleteTextures", "PFNGLDELETETEXTURESPROC")
+  fn.glBindTexture = load_gl_proc("glBindTexture", "PFNGLBINDTEXTUREPROC")
+  fn.glActiveTexture = load_gl_proc("glActiveTexture", "PFNGLACTIVETEXTUREPROC")
+  fn.glTexParameteri = load_gl_proc("glTexParameteri", "PFNGLTEXPARAMETERIPROC")
+  fn.glTexImage2D = load_gl_proc("glTexImage2D", "PFNGLTEXIMAGE2DPROC")
+
+  fn.glUniform1i = load_gl_proc("glUniform1i", "PFNGLUNIFORM1IPROC")
 end
 
 -- ============================================================
@@ -417,6 +477,102 @@ end
 function M.draw_triangles(first, count)
   local GL_TRIANGLES = 0x0004
   M.fn.glDrawArrays(GL_TRIANGLES, first or 0, count or 3)
+end
+
+-- ============================================================
+-- Texture / Compute helpers
+-- ============================================================
+
+local GL_TEXTURE_2D = 0x0DE1
+local GL_TEXTURE0 = 0x84C0
+
+local GL_RGBA = 0x1908
+local GL_RGBA8 = 0x8058
+local GL_UNSIGNED_BYTE = 0x1401
+
+local GL_TEXTURE_MIN_FILTER = 0x2801
+local GL_TEXTURE_MAG_FILTER = 0x2800
+local GL_TEXTURE_WRAP_S = 0x2802
+local GL_TEXTURE_WRAP_T = 0x2803
+
+local GL_NEAREST = 0x2600
+local GL_LINEAR = 0x2601
+local GL_CLAMP_TO_EDGE = 0x812F
+
+local GL_WRITE_ONLY = 0x88B9
+
+local GL_SHADER_IMAGE_ACCESS_BARRIER_BIT = 0x00000020
+local GL_TEXTURE_FETCH_BARRIER_BIT = 0x00000008
+
+function M.create_texture_rgba8(width, height, filter)
+  width = math.max(1, math.floor(width or 1))
+  height = math.max(1, math.floor(height or 1))
+
+  local tex = ffi.new("GLuint[1]")
+  M.fn.glGenTextures(1, tex)
+
+  M.fn.glBindTexture(GL_TEXTURE_2D, tex[0])
+
+  filter = filter or GL_NEAREST
+
+  M.fn.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter)
+  M.fn.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter)
+  M.fn.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
+  M.fn.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
+
+  M.fn.glTexImage2D(
+    GL_TEXTURE_2D,
+    0,
+    GL_RGBA8,
+    width,
+    height,
+    0,
+    GL_RGBA,
+    GL_UNSIGNED_BYTE,
+    nil
+  )
+
+  M.fn.glBindTexture(GL_TEXTURE_2D, 0)
+
+  return tex[0]
+end
+
+function M.delete_texture(texture)
+  if texture and texture ~= 0 then
+    local tex = ffi.new("GLuint[1]", texture)
+    M.fn.glDeleteTextures(1, tex)
+  end
+end
+
+function M.bind_texture(unit, texture)
+  unit = unit or 0
+  M.fn.glActiveTexture(GL_TEXTURE0 + unit)
+  M.fn.glBindTexture(GL_TEXTURE_2D, texture or 0)
+end
+
+function M.bind_image_texture_write(unit, texture)
+  M.fn.glBindImageTexture(
+    unit or 0,
+    texture or 0,
+    0,
+    0,
+    0,
+    GL_WRITE_ONLY,
+    GL_RGBA8
+  )
+end
+
+function M.dispatch_compute(groups_x, groups_y, groups_z)
+  M.fn.glDispatchCompute(groups_x or 1, groups_y or 1, groups_z or 1)
+end
+
+function M.compute_barrier()
+  M.fn.glMemoryBarrier(
+    bor(
+      GL_SHADER_IMAGE_ACCESS_BARRIER_BIT,
+      GL_TEXTURE_FETCH_BARRIER_BIT
+    )
+  )
 end
 
 return M
