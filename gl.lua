@@ -66,6 +66,38 @@ typedef HGLRC (__stdcall *PFNWGLCREATECONTEXTATTRIBSARBPROC)(
 );
 
 typedef BOOL (__stdcall *PFNWGLSWAPINTERVALEXTPROC)(int interval);
+
+typedef unsigned int GLenum;
+typedef unsigned int GLuint;
+typedef int GLint;
+typedef int GLsizei;
+typedef unsigned int GLbitfield;
+typedef float GLfloat;
+typedef char GLchar;
+typedef unsigned char GLboolean;
+
+typedef GLuint (__stdcall *PFNGLCREATESHADERPROC)(GLenum type);
+typedef void   (__stdcall *PFNGLSHADERSOURCEPROC)(GLuint shader, GLsizei count, const GLchar **string, const GLint *length);
+typedef void   (__stdcall *PFNGLCOMPILESHADERPROC)(GLuint shader);
+typedef void   (__stdcall *PFNGLGETSHADERIVPROC)(GLuint shader, GLenum pname, GLint *params);
+typedef void   (__stdcall *PFNGLGETSHADERINFOLOGPROC)(GLuint shader, GLsizei maxLength, GLsizei *length, GLchar *infoLog);
+typedef void   (__stdcall *PFNGLDELETESHADERPROC)(GLuint shader);
+
+typedef GLuint (__stdcall *PFNGLCREATEPROGRAMPROC)(void);
+typedef void   (__stdcall *PFNGLATTACHSHADERPROC)(GLuint program, GLuint shader);
+typedef void   (__stdcall *PFNGLLINKPROGRAMPROC)(GLuint program);
+typedef void   (__stdcall *PFNGLGETPROGRAMIVPROC)(GLuint program, GLenum pname, GLint *params);
+typedef void   (__stdcall *PFNGLGETPROGRAMINFOLOGPROC)(GLuint program, GLsizei maxLength, GLsizei *length, GLchar *infoLog);
+typedef void   (__stdcall *PFNGLDELETEPROGRAMPROC)(GLuint program);
+typedef void   (__stdcall *PFNGLUSEPROGRAMPROC)(GLuint program);
+
+typedef GLint  (__stdcall *PFNGLGETUNIFORMLOCATIONPROC)(GLuint program, const GLchar *name);
+typedef void   (__stdcall *PFNGLUNIFORM1FPROC)(GLint location, GLfloat v0);
+typedef void   (__stdcall *PFNGLUNIFORM2FPROC)(GLint location, GLfloat v0, GLfloat v1);
+
+typedef void   (__stdcall *PFNGLGENVERTEXARRAYSPROC)(GLsizei n, GLuint *arrays);
+typedef void   (__stdcall *PFNGLBINDVERTEXARRAYPROC)(GLuint array);
+typedef void   (__stdcall *PFNGLDRAWARRAYSPROC)(GLenum mode, GLint first, GLsizei count);
 ]]
 
 local user32 = ffi.load("user32")
@@ -116,6 +148,61 @@ local state = {
   renderer = nil,
   shading_language = nil,
 }
+
+M.fn = {}
+
+local function is_bad_gl_pointer(ptr)
+  if ptr == nil then
+    return true
+  end
+
+  local ok, addr = pcall(function()
+    return tonumber(ffi.cast("intptr_t", ptr))
+  end)
+
+  if not ok or addr == nil then
+    return false
+  end
+
+  return addr == 0 or addr == 1 or addr == 2 or addr == 3 or addr == -1
+end
+
+local function load_gl_proc(name, ctype)
+  local ptr = opengl32.wglGetProcAddress(name)
+
+  if is_bad_gl_pointer(ptr) then
+    error("OpenGL function not available: " .. name)
+  end
+
+  return ffi.cast(ctype, ptr)
+end
+
+local function load_gl_functions()
+  local fn = M.fn
+
+  fn.glCreateShader = load_gl_proc("glCreateShader", "PFNGLCREATESHADERPROC")
+  fn.glShaderSource = load_gl_proc("glShaderSource", "PFNGLSHADERSOURCEPROC")
+  fn.glCompileShader = load_gl_proc("glCompileShader", "PFNGLCOMPILESHADERPROC")
+  fn.glGetShaderiv = load_gl_proc("glGetShaderiv", "PFNGLGETSHADERIVPROC")
+  fn.glGetShaderInfoLog = load_gl_proc("glGetShaderInfoLog", "PFNGLGETSHADERINFOLOGPROC")
+  fn.glDeleteShader = load_gl_proc("glDeleteShader", "PFNGLDELETESHADERPROC")
+
+  fn.glCreateProgram = load_gl_proc("glCreateProgram", "PFNGLCREATEPROGRAMPROC")
+  fn.glAttachShader = load_gl_proc("glAttachShader", "PFNGLATTACHSHADERPROC")
+  fn.glLinkProgram = load_gl_proc("glLinkProgram", "PFNGLLINKPROGRAMPROC")
+  fn.glGetProgramiv = load_gl_proc("glGetProgramiv", "PFNGLGETPROGRAMIVPROC")
+  fn.glGetProgramInfoLog = load_gl_proc("glGetProgramInfoLog", "PFNGLGETPROGRAMINFOLOGPROC")
+  fn.glDeleteProgram = load_gl_proc("glDeleteProgram", "PFNGLDELETEPROGRAMPROC")
+  fn.glUseProgram = load_gl_proc("glUseProgram", "PFNGLUSEPROGRAMPROC")
+
+  fn.glGetUniformLocation = load_gl_proc("glGetUniformLocation", "PFNGLGETUNIFORMLOCATIONPROC")
+  fn.glUniform1f = load_gl_proc("glUniform1f", "PFNGLUNIFORM1FPROC")
+  fn.glUniform2f = load_gl_proc("glUniform2f", "PFNGLUNIFORM2FPROC")
+
+  fn.glGenVertexArrays = load_gl_proc("glGenVertexArrays", "PFNGLGENVERTEXARRAYSPROC")
+  fn.glBindVertexArray = load_gl_proc("glBindVertexArray", "PFNGLBINDVERTEXARRAYPROC")
+  fn.glDrawArrays = load_gl_proc("glDrawArrays", "PFNGLDRAWARRAYSPROC")
+end
 
 -- ============================================================
 -- Helpers
@@ -250,6 +337,8 @@ function M.init(hwnd, width, height)
   local legacy_ctx = create_legacy_context(state.hdc)
   state.hglrc = create_core_context(state.hdc, legacy_ctx)
 
+  load_gl_functions()
+
   try_load_swap_interval()
 
   state.vendor = cstr(opengl32.glGetString(GL_VENDOR))
@@ -309,6 +398,25 @@ function M.info()
     version = state.version,
     shading_language = state.shading_language,
   }
+end
+
+function M.use_program(program)
+  M.fn.glUseProgram(program or 0)
+end
+
+function M.create_vertex_array()
+  local vao = ffi.new("GLuint[1]")
+  M.fn.glGenVertexArrays(1, vao)
+  return vao[0]
+end
+
+function M.bind_vertex_array(vao)
+  M.fn.glBindVertexArray(vao or 0)
+end
+
+function M.draw_triangles(first, count)
+  local GL_TRIANGLES = 0x0004
+  M.fn.glDrawArrays(GL_TRIANGLES, first or 0, count or 3)
 end
 
 return M

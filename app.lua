@@ -1,4 +1,5 @@
 local gl = require("gl")
+local shader = require("shader")
 
 local app = {}
 
@@ -8,6 +9,15 @@ function app.init(ctx)
   app.time = 0
 
   gl.init(ctx.hwnd, ctx.width, ctx.height)
+
+  app.vao = gl.create_vertex_array()
+  gl.bind_vertex_array(app.vao)
+
+  app.screen_program = shader.graphics(
+    "fullscreen",
+    "shaders/fullscreen.vert",
+    "shaders/fullscreen.frag"
+  )
 end
 
 function app.resize(width, height)
@@ -19,21 +29,24 @@ end
 
 function app.update(dt)
   app.time = app.time + dt
+
+  shader.update_all(dt)
 end
 
 function app.render()
-  local t = app.time
+  gl.clear(0.02, 0.02, 0.03, 1.0)
 
-  local r = math.sin(t * 1.1) * 0.5 + 0.5
-  local g = math.sin(t * 1.7 + 2.0) * 0.5 + 0.5
-  local b = math.sin(t * 2.3 + 4.0) * 0.5 + 0.5
+  app.screen_program:use()
+  app.screen_program:uniform1f("u_time", app.time)
+  app.screen_program:uniform2f("u_resolution", app.width, app.height)
 
-  gl.clear(r * 0.25, g * 0.25, b * 0.25, 1.0)
+  gl.bind_vertex_array(app.vao)
+  gl.draw_triangles(0, 3)
+
   gl.swap()
 end
 
 function app.key_down(vk)
-  -- ESC
   if vk == 0x1B then
     return "quit"
   end
@@ -52,6 +65,7 @@ function app.mouse_up(button, x, y)
 end
 
 function app.shutdown()
+  shader.shutdown_all()
   gl.shutdown()
 end
 
